@@ -1,0 +1,12 @@
+---
+# Main playbook that orchestrates the entire deployment
+- name: Build Docker Images
+  hosts: localhost
+  connection: local
+  import_playbook: build-and-push.yml
+
+- name: Deploy to Kubernetes
+  hosts: k8s-master
+  become: yes
+  import_playbook: deploy.yml
+

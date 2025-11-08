@@ -1,0 +1,465 @@
+---
+- name: Deploy Car Rental Management System on Kubernetes
+  hosts: k8s-master
+  become: yes
+  vars:
+    project_root: "{{ playbook_dir }}/../../"
+    k8s_manifests_dir: "{{ project_root }}/k8s"
+    
+  tasks:
+    - name: Check if kubectl is installed
+      command: kubectl version --client
+      register: kubectl_check
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if kubectl is not installed
+      fail:
+        msg: "kubectl is not installed. Please install kubectl first."
+      when: kubectl_check.rc != 0
+
+    - name: Check if Kubernetes cluster is accessible
+      command: kubectl cluster-info
+      register: cluster_info
+      changed_when: false
+
+    - name: Display cluster information
+      debug:
+        msg: "{{ cluster_info.stdout }}"
+
+    - name: Create namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ k8s_namespace }}"
+            labels:
+              name: "{{ k8s_namespace }}"
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+        context: "{{ k8s_context }}"
+
+    - name: Create MySQL Secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: mysql-secret
+            namespace: "{{ k8s_namespace }}"
+          type: Opaque
+          stringData:
+            MYSQL_ROOT_PASSWORD: "{{ mysql_root_password }}"
+            MYSQL_DATABASE: "{{ mysql_database }}"
+            MYSQL_USER: "{{ mysql_user }}"
+            MYSQL_PASSWORD: "{{ mysql_password }}"
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+        context: "{{ k8s_context }}"
+
+    - name: Create MySQL PersistentVolumeClaim
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: mysql-pvc
+            namespace: "{{ k8s_namespace }}"
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: "{{ mysql_storage_size }}"
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+        context: "{{ k8s_context }}"
+
+    - name: Deploy MySQL
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: mysql
+            namespace: "{{ k8s_namespace }}"
+            labels:
+              app: mysql
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: mysql
+            template:
+              metadata:
+                labels:
+                  app: mysql
+              spec:
+                containers:
+                - name: mysql
+                  image: "{{ mysql_image }}"
+                  ports:
+                  - containerPort: 3306
+                    name: mysql
+                  env:
+                  - name: MYSQL_ROOT_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: mysql-secret
+                        key: MYSQL_ROOT_PASSWORD
+                  - name: MYSQL_DATABASE
+                    valueFrom:
+                      secretKeyRef:
+                        name: mysql-secret
+                        key: MYSQL_DATABASE
+                  - name: MYSQL_USER
+                    valueFrom:
+                      secretKeyRef:
+                        name: mysql-secret
+                        key: MYSQL_USER
+                  - name: MYSQL_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: mysql-secret
+                        key: MYSQL_PASSWORD
+                  volumeMounts:
+                  - name: mysql-storage
+                    mountPath: /var/lib/mysql
+                  livenessProbe:
+                    exec:
+                      command:
+                      - sh
+                      - -c
+                      - "mysqladmin ping -h localhost"
+                    initialDelaySeconds: 30
+                    periodSeconds: 10
+                    timeoutSeconds: 5
+                  readinessProbe:
+                    exec:
+                      command:
+                      - sh
+                      - -c
+                      - "mysqladmin ping -h localhost"
+                    initialDelaySeconds: 10
+                    periodSeconds: 5
+                    timeoutSeconds: 3
+                volumes:
+                - name: mysql-storage
+                  persistentVolumeClaim:
+                    claimName: mysql-pvc
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+        context: "{{ k8s_context }}"
+
+    - name: Create MySQL Service
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: mysql
+            namespace: "{{ k8s_namespace }}"
+            labels:
+              app: mysql
+          spec:
+            type: ClusterIP
+            ports:
+            - port: 3306
+              targetPort: 3306
+              protocol: TCP
+              name: mysql
+            selector:
+              app: mysql
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+        context: "{{ k8s_context }}"
+
+    - name: Wait for MySQL to be ready
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ k8s_namespace }}"
+        label_selectors:
+          - app=mysql
+        wait: yes
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: 300
+      register: mysql_pods
+
+    - name: Create Backend ConfigMap
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: backend-config
+            namespace: "{{ k8s_namespace }}"
+          data:
+            SPRING_DATASOURCE_URL: "jdbc:mysql://mysql:3306/{{ mysql_database }}"
+            SPRING_DATASOURCE_USERNAME: "{{ mysql_user }}"
+            SPRING_DATASOURCE_PASSWORD: "{{ mysql_password }}"
+            SPRING_JPA_HIBERNATE_DDL_AUTO: "update"
+            SPRING_JPA_SHOW_SQL: "true"
+            SERVER_PORT: "8080"
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+        context: "{{ k8s_context }}"
+
+    - name: Deploy Backend
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: backend
+            namespace: "{{ k8s_namespace }}"
+            labels:
+              app: backend
+          spec:
+            replicas: "{{ backend_replicas }}"
+            strategy:
+              type: RollingUpdate
+              rollingUpdate:
+                maxSurge: 1
+                maxUnavailable: 0
+            selector:
+              matchLabels:
+                app: backend
+            template:
+              metadata:
+                labels:
+                  app: backend
+              spec:
+                containers:
+                - name: backend
+                  image: "{{ backend_image }}"
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                  - containerPort: 8080
+                    name: http
+                  env:
+                  - name: SPRING_DATASOURCE_URL
+                    valueFrom:
+                      configMapKeyRef:
+                        name: backend-config
+                        key: SPRING_DATASOURCE_URL
+                  - name: SPRING_DATASOURCE_USERNAME
+                    valueFrom:
+                      configMapKeyRef:
+                        name: backend-config
+                        key: SPRING_DATASOURCE_USERNAME
+                  - name: SPRING_DATASOURCE_PASSWORD
+                    valueFrom:
+                      configMapKeyRef:
+                        name: backend-config
+                        key: SPRING_DATASOURCE_PASSWORD
+                  - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+                    valueFrom:
+                      configMapKeyRef:
+                        name: backend-config
+                        key: SPRING_JPA_HIBERNATE_DDL_AUTO
+                  - name: SPRING_JPA_SHOW_SQL
+                    valueFrom:
+                      configMapKeyRef:
+                        name: backend-config
+                        key: SPRING_JPA_SHOW_SQL
+                  - name: SERVER_PORT
+                    valueFrom:
+                      configMapKeyRef:
+                        name: backend-config
+                        key: SERVER_PORT
+                  livenessProbe:
+                    httpGet:
+                      path: /actuator/health
+                      port: 8080
+                    initialDelaySeconds: 60
+                    periodSeconds: 10
+                    timeoutSeconds: 5
+                    failureThreshold: 3
+                  readinessProbe:
+                    httpGet:
+                      path: /actuator/health
+                      port: 8080
+                    initialDelaySeconds: 30
+                    periodSeconds: 5
+                    timeoutSeconds: 3
+                    failureThreshold: 3
+                  resources:
+                    requests:
+                      memory: "{{ backend_memory_request }}"
+                      cpu: "{{ backend_cpu_request }}"
+                    limits:
+                      memory: "{{ backend_memory_limit }}"
+                      cpu: "{{ backend_cpu_limit }}"
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+        context: "{{ k8s_context }}"
+
+    - name: Create Backend Service
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: backend
+            namespace: "{{ k8s_namespace }}"
+            labels:
+              app: backend
+          spec:
+            type: ClusterIP
+            ports:
+            - port: 8080
+              targetPort: 8080
+              protocol: TCP
+              name: http
+            selector:
+              app: backend
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+        context: "{{ k8s_context }}"
+
+    - name: Deploy Frontend
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: frontend
+            namespace: "{{ k8s_namespace }}"
+            labels:
+              app: frontend
+          spec:
+            replicas: "{{ frontend_replicas }}"
+            strategy:
+              type: RollingUpdate
+              rollingUpdate:
+                maxSurge: 1
+                maxUnavailable: 0
+            selector:
+              matchLabels:
+                app: frontend
+            template:
+              metadata:
+                labels:
+                  app: frontend
+              spec:
+                containers:
+                - name: frontend
+                  image: "{{ frontend_image }}"
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                  - containerPort: 80
+                    name: http
+                  livenessProbe:
+                    httpGet:
+                      path: /
+                      port: 80
+                    initialDelaySeconds: 30
+                    periodSeconds: 10
+                    timeoutSeconds: 5
+                    failureThreshold: 3
+                  readinessProbe:
+                    httpGet:
+                      path: /
+                      port: 80
+                    initialDelaySeconds: 10
+                    periodSeconds: 5
+                    timeoutSeconds: 3
+                    failureThreshold: 3
+                  resources:
+                    requests:
+                      memory: "{{ frontend_memory_request }}"
+                      cpu: "{{ frontend_cpu_request }}"
+                    limits:
+                      memory: "{{ frontend_memory_limit }}"
+                      cpu: "{{ frontend_cpu_limit }}"
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+        context: "{{ k8s_context }}"
+
+    - name: Create Frontend Service
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: frontend
+            namespace: "{{ k8s_namespace }}"
+            labels:
+              app: frontend
+          spec:
+            type: LoadBalancer
+            ports:
+            - port: 80
+              targetPort: 80
+              protocol: TCP
+              name: http
+            selector:
+              app: frontend
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+        context: "{{ k8s_context }}"
+
+    - name: Create Ingress (optional - requires ingress controller)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: carrental-ingress
+            namespace: "{{ k8s_namespace }}"
+            annotations:
+              nginx.ingress.kubernetes.io/rewrite-target: /
+              nginx.ingress.kubernetes.io/ssl-redirect: "false"
+          spec:
+            ingressClassName: nginx
+            rules:
+            - host: carrental.local
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: frontend
+                      port:
+                        number: 80
+                - path: /api
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: backend
+                      port:
+                        number: 8080
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+        context: "{{ k8s_context }}"
+      when: deploy_ingress | default(false)
+
+    - name: Wait for all pods to be ready
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ k8s_namespace }}"
+        wait: yes
+        wait_condition:
+          type: Ready
+          status: "True"
+        wait_timeout: 600
+      register: all_pods
+
+    - name: Display deployment status
+      debug:
+        msg: "Deployment completed successfully. All pods are ready."
+
+    - name: Get service endpoints
+      command: kubectl get svc -n {{ k8s_namespace }}
+      register: service_info
+
+    - name: Display service information
+      debug:
+        msg: "{{ service_info.stdout_lines }}"
+

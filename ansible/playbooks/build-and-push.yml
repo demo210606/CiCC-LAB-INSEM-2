@@ -1,0 +1,73 @@
+---
+- name: Build and Push Docker Images
+  hosts: localhost
+  connection: local
+  vars:
+    project_root: "{{ playbook_dir }}/../../"
+    docker_registry: "{{ docker_registry | default('') }}"
+    
+  tasks:
+    - name: Check if Docker is installed
+      command: docker --version
+      register: docker_check
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if Docker is not installed
+      fail:
+        msg: "Docker is not installed. Please install Docker first."
+      when: docker_check.rc != 0
+
+    - name: Build backend Docker image
+      community.docker.docker_image:
+        name: "{{ backend_image }}"
+        source: build
+        build:
+          path: "{{ project_root }}/carrental-backend"
+          dockerfile: Dockerfile
+        state: present
+        force_source: yes
+
+    - name: Build frontend Docker image
+      community.docker.docker_image:
+        name: "{{ frontend_image }}"
+        source: build
+        build:
+          path: "{{ project_root }}/carrental-frontend"
+          dockerfile: Dockerfile
+        state: present
+        force_source: yes
+
+    - name: Tag backend image for registry (if registry is specified)
+      command: docker tag {{ backend_image }} {{ docker_registry }}/{{ backend_image }}
+      when: docker_registry != ""
+
+    - name: Tag frontend image for registry (if registry is specified)
+      command: docker tag {{ frontend_image }} {{ docker_registry }}/{{ frontend_image }}
+      when: docker_registry != ""
+
+    - name: Login to Docker registry (if registry is specified)
+      community.docker.docker_login:
+        registry: "{{ docker_registry }}"
+        username: "{{ docker_registry_username | default('') }}"
+        password: "{{ docker_registry_password | default('') }}"
+      when: docker_registry != "" and docker_registry_username != ""
+
+    - name: Push backend image to registry (if registry is specified)
+      community.docker.docker_image:
+        name: "{{ docker_registry }}/{{ backend_image }}"
+        push: yes
+        source: local
+      when: docker_registry != ""
+
+    - name: Push frontend image to registry (if registry is specified)
+      community.docker.docker_image:
+        name: "{{ docker_registry }}/{{ frontend_image }}"
+        push: yes
+        source: local
+      when: docker_registry != ""
+
+    - name: Display build information
+      debug:
+        msg: "Docker images built successfully. Backend: {{ backend_image }}, Frontend: {{ frontend_image }}"
+

@@ -1,0 +1,39 @@
+---
+# Kubernetes cluster configuration
+k8s_namespace: carrental
+k8s_context: default
+
+# Docker registry configuration (if using private registry)
+docker_registry: ""
+docker_registry_username: ""
+docker_registry_password: ""
+
+# Image tags
+backend_image: carrental-backend:latest
+frontend_image: carrental-frontend:latest
+mysql_image: mysql:8.0
+
+# Application configuration
+mysql_root_password: "1234"
+mysql_database: "carrental"
+mysql_user: "root"
+mysql_password: "1234"
+
+# Replica counts for high availability
+backend_replicas: 3
+frontend_replicas: 3
+
+# Resource limits
+backend_memory_request: "512Mi"
+backend_memory_limit: "1Gi"
+backend_cpu_request: "250m"
+backend_cpu_limit: "500m"
+
+frontend_memory_request: "128Mi"
+frontend_memory_limit: "256Mi"
+frontend_cpu_request: "100m"
+frontend_cpu_limit: "200m"
+
+# Storage
+mysql_storage_size: "5Gi"
+

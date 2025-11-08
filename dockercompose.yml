@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: ./carrental-backend
+    container_name: car-rental-backend
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build:
+      context: ./carrental-frontend
+    container_name: car-rental-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend

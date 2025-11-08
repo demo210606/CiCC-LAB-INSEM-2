@@ -1,0 +1,43 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build
+target/
+dist/
+*.jar
+*.war
+*.class
+
+# Dependencies
+node_modules/
+.mvn/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kubernetes
+*.kubeconfig
+
+# Ansible
+*.retry
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Docker
+.dockerignore
